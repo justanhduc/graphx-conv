@@ -5,11 +5,17 @@ import os
 import pickle as pkl
 
 
-def sample_spherical(n_points):
-    vec = np.random.rand(n_points, 3) * 2. - 1.
-    vec /= np.linalg.norm(vec, axis=1, keepdims=True)
-    pc = vec * .3 + np.array([[6.462339e-04,  9.615256e-04, -7.909229e-01]])
-    return pc.astype('float32')
+def init_pointcloud_loader(num_points):
+    Z = np.random.rand(num_points) + 1.
+    h = np.random.uniform(10., 214., size=(num_points,))
+    w = np.random.uniform(10., 214., size=(num_points,))
+    X = (w - 111.5) / 248. * -Z
+    Y = (h - 111.5) / 248. * Z
+    X = np.reshape(X, (-1, 1))
+    Y = np.reshape(Y, (-1, 1))
+    Z = np.reshape(Z, (-1, 1))
+    XYZ = np.concatenate((X, Y, Z), 1)
+    return XYZ.astype('float32')
 
 
 def rgb2gray(rgb):
@@ -63,7 +69,7 @@ class ShapeNet(Dataset):
         img = (np.transpose(img / 255.0, (2, 0, 1)) - .5) * 2
         pc = np.array(contents[1], 'float32')[:, :3]
         pc -= np.mean(pc, 0, keepdims=True)
-        item = (sample_spherical(self.n_points), np.array(img, 'float32'), pc)
+        item = (init_pointcloud_loader(self.n_points), np.array(img, 'float32'), pc)
         if self.metadata:
             metadata = pkl_path.split('\\')[-1][:-4]
             item += (metadata,)
