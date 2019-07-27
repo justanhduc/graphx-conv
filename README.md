@@ -1,6 +1,6 @@
 # GraphX-Convolution
 
-The official implementation of the ICCV submission "GraphX-convolution for point cloud deformation in 2D-to-3D conversion".
+The official implementation of the ICCV paper "GraphX-convolution for point cloud deformation in 2D-to-3D conversion".
 
 ![framework](./imgs/framework.jpg)
 
