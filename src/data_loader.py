@@ -38,26 +38,25 @@ def collate(batch):
 
 
 class ShapeNet(Dataset):
-    def __init__(self, file_list, path, grayscale=None, type='train', n_points=2000, metadata=False, **kwargs):
+    def __init__(self, path, grayscale=None, type='train', n_points=2000, **kwargs):
         assert type in ('train', 'valid', 'test')
         self.n_points = n_points
         self.grayscale = grayscale
-        self.file_list = file_list
+        self.file_list = os.listdir(path)
         self.path = path
         self.type = type if type in ('train', 'test') else 'test'
-        self.metadata = metadata
         self.num_vals = kwargs.pop('num_vals', 30)
         self.pkl_list = []
         self.sample_weights = []
-        for folder in file_list:
+        for folder in self.file_list:
             file_path = os.listdir(os.path.join(path, folder, self.type))
             if type == 'valid':
-                idx = np.random.randint(len(file_path), size=self.num_vals // len(file_list))
+                idx = np.random.randint(len(file_path), size=self.num_vals // len(self.file_list))
                 file_path = [file_path[i] for i in idx]
 
             file_path = [os.path.join(self.path, folder, self.type, f) for f in file_path]
             self.pkl_list.extend(file_path)
-            self.sample_weights.extend([1 / len(file_path)] * len(file_path))
+            self.sample_weights.extend([1/len(file_path)] * len(file_path))
 
     def __len__(self):
         return len(self.pkl_list)
@@ -69,9 +68,4 @@ class ShapeNet(Dataset):
         img = (np.transpose(img / 255.0, (2, 0, 1)) - .5) * 2
         pc = np.array(contents[1], 'float32')[:, :3]
         pc -= np.mean(pc, 0, keepdims=True)
-        item = (init_pointcloud_loader(self.n_points), np.array(img, 'float32'), pc)
-        if self.metadata:
-            metadata = pkl_path.split('\\')[-1][:-4]
-            item += (metadata,)
-
-        return item
+        return init_pointcloud_loader(self.n_points), np.array(img, 'float32'), pc

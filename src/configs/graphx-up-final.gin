@@ -1,0 +1,24 @@
+GraphX.data_root = '/media/hdd2/csh/ShapeNet7Class2'
+
+GraphX.name = 'ICCV-graphx-conv-up-final'
+GraphX.img_enc = @cnn18_enc
+GraphX.pc_enc = @pc_enc
+GraphX.pc_dec = @pc_upresgraphxdec
+GraphX.adain = True
+GraphX.projection = True
+
+GraphX.color_img = False
+GraphX.n_points = 250
+GraphX.bs = 4
+
+GraphX.optimizer = @adam
+GraphX.scheduler = @multistep_lr
+GraphX.lr = 5e-5
+GraphX.weight_decay = 1e-5
+GraphX.gamma = .3
+GraphX.milestones = (5, 8)
+GraphX.n_epochs = 10
+GraphX.print_freq = 1000
+GraphX.val_freq = 10000
+
+GraphX.checkpoint_folder = None

@@ -1,77 +1,28 @@
-from collections import OrderedDict
 from functools import partial
+from neuralnet_pytorch import utils
 import numpy as np
-import torch.nn as nn
+import torch as T
 
 from ops import *
-from utils import chamfer_loss
 
-Conv = nn.Conv2d
+weights_init = T.nn.init.kaiming_normal_
+bias_init = T.nn.init.zeros_
+Conv = partial(nnt.Conv2d, weights_init=weights_init, bias_init=bias_init)
 
 
-def normalized_chamfer_loss(pred, gt, reduce='sum'):
-    loss = chamfer_loss(pred, gt, reduce=reduce)
+def normalized_chamfer_loss(pred, gt, reduce='mean', normalized=False):
+    if normalized:
+        max_dist, _ = T.max(T.sqrt(T.sum(gt ** 2., -1)), -1)
+        origin = T.mean(gt, -2)
+        pred = (pred - origin) / max_dist
+        gt = (gt - origin) / max_dist
+
+    loss = nnt.chamfer_loss(pred, gt, reduce=reduce)
     return loss if reduce == 'sum' else loss * 3000.
 
 
-def wrapper(func, *args, **kwargs):
-    class Wrapper(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.func = func
-
-        def forward(self, input):
-            return self.func(input, *args, **kwargs)
-
-    return Wrapper()
-
-
-class PointCloudEncoder(nn.Module):
-    def __init__(self, in_features, out_features, cat_pc=True, use_adain=True, use_proj=True, activation=nn.ReLU()):
-        super().__init__()
-        self.cat_pc = cat_pc
-        self.use_adain = use_adain
-        self.use_proj = use_proj
-
-        if use_adain:
-            self.blocks = nn.Sequential()
-            dim = in_features
-            for i, out_features_ in enumerate(out_features):
-                block = nn.Sequential()
-                block.add_module('fc1', nn.Linear(dim, out_features_))
-                block.add_module('relu1', activation)
-                block.add_module('fc2', nn.Linear(out_features_, out_features_))
-                block.add_module('relu2', activation)
-                self.blocks.add_module('block%d' % i, block)
-                dim = out_features_
-
-            self.fcs = nn.Sequential(*[nn.Linear(block[-2].out_features, out_features_)
-                                       for block, out_features_ in zip(self.blocks, out_features)])
-
-        self.concat = wrapper(T.cat, dim=-1)
-
-    def forward(self, img_feats, init_pc):
-        pc_feats = []
-        if self.use_adain:
-            pc_encoded = []
-            out_feat = init_pc
-            for block in self.blocks.children():
-                out_feat = block(out_feat)
-                pc_encoded.append(out_feat)
-
-            pc_feats += [self.adain(pc_feat, img_feat, fc) for pc_feat, img_feat, fc in
-                         zip(pc_encoded, img_feats, self.fcs.children())]
-
-        if self.use_proj:
-            pc_feats += [self.get_projection(img_feat, init_pc) for img_feat in img_feats]
-
-        if self.cat_pc:
-            pc_feats += [init_pc]
-
-        pc_feats_trans = self.concat(pc_feats)
-        return pc_feats_trans
-
-    def _project_slow(self, img_feats, xs, ys):
+class _PCEncoderMethods:
+    def _project_old(self, img_feats, xs, ys):
         out = []
         for i in range(list(img_feats.shape)[0]):
             x, y, img_feat = xs[i], ys[i], img_feats[i]
@@ -135,62 +86,40 @@ class PointCloudEncoder(nn.Module):
         feats = self._project(img_feat, x, y)
         return feats
 
-    def adain(self, pc_feat, img_feat, fc):
+    def transform(self, pc_feat, img_feat, fc):
         pc_feat = (pc_feat - T.mean(pc_feat, -1, keepdim=True)) / T.sqrt(T.var(pc_feat, -1, keepdim=True) + 1e-8)
         mean, var = T.mean(img_feat, (2, 3)), T.var(T.flatten(img_feat, 2), 2)
-        output = (pc_feat + mean[:, None]) * T.sqrt(var[:, None] + 1e-8)
+        output = (pc_feat + nnt.utils.dimshuffle(mean, (0, 'x', 1))) * T.sqrt(
+            nnt.utils.dimshuffle(var, (0, 'x', 1)) + 1e-8)
         return fc(output)
 
+    def _forward(self, img_feats, init_pc):
+        features = []
+        if self.adain:
+            pc_feats = []
+            # centered_pc = init_pc - T.mean(init_pc, -1, keepdim=True)
+            out_feat = init_pc
+            for block in self.blocks.children():
+                out_feat = block(out_feat)
+                pc_feats.append(out_feat)
 
-class CNN18Encoder(nn.Module):
-    def __init__(self, in_channels, activation=nn.ReLU()):
-        super().__init__()
+            features += [self.transform(pc_feat, img_feat, fc) for pc_feat, img_feat, fc in
+                         zip(pc_feats, img_feats, self.fcs.children())]
 
-        self.block1 = nn.Sequential()
-        self.block1.conv1 = Conv(in_channels, 16, 3, padding=1)
-        self.block1.relu1 = activation
-        self.block1.conv2 = Conv(16, 16, 3, padding=1)
-        self.block1.relu2 = activation
-        self.block1.conv3 = Conv(16, 32, 3, stride=2, padding=1)
-        self.block1.relu3 = activation
-        self.block1.conv4 = Conv(32, 32, 3, padding=1)
-        self.block1.relu4 = activation
-        self.block1.conv5 = Conv(32, 32, 3, padding=1)
-        self.block1.relu5 = activation
-        self.block1.conv6 = Conv(32, 64, 3, stride=2, padding=1)
-        self.block1.relu6 = activation
-        self.block1.conv7 = Conv(64, 64, 3, padding=1)
-        self.block1.relu7 = activation
-        self.block1.conv8 = Conv(64, 64, 3, padding=1)
-        self.block1.relu8 = activation
+        if self.projection:
+            features += [self.get_projection(img_feat, init_pc) for img_feat in img_feats]
 
-        self.block3 = nn.Sequential()
-        self.block3.conv1 = Conv(64, 128, 3, stride=2, padding=1)
-        self.block3.relu1 = activation
-        self.block3.conv2 = Conv(128, 128, 3, padding=1)
-        self.block3.relu2 = activation
-        self.block3.conv3 = Conv(128, 128, 3, padding=1)
-        self.block3.relu3 = activation
+        features += [init_pc]
+        pc_feats_trans = self.concat(features)
+        return pc_feats_trans
 
-        self.block4 = nn.Sequential()
-        self.block4.conv1 = Conv(128, 256, 5, stride=2, padding=2)
-        self.block4.relu1 = activation
-        self.block4.conv2 = Conv(256, 256, 3, padding=1)
-        self.block4.relu2 = activation
-        self.block4.conv3 = Conv(256, 256, 3, padding=1)
-        self.block4.relu3 = activation
+    def _output_shape(self):
+        modules = list(self.children())
+        return modules[-1].output_shape
 
-        self.block5 = nn.Sequential()
-        self.block5.conv1 = Conv(256, 512, 5, stride=2, padding=2)
-        self.block5.relu1 = activation
-        self.block5.conv2 = Conv(512, 512, 3, padding=1)
-        self.block5.relu2 = activation
-        self.block5.conv3 = Conv(512, 512, 3, padding=1)
-        self.block5.relu3 = activation
-        self.block5.conv4 = Conv(512, 512, 3, padding=1)
-        self.block5.relu4 = activation
 
-    def forward(self, input):
+class _ImageEncoderMethods:
+    def _forward(self, input):
         feats = []
         output = input
         for block in self.children():
@@ -198,71 +127,199 @@ class CNN18Encoder(nn.Module):
             feats.append(output)
         return feats
 
-
-class PointCloudDecoder(nn.Sequential):
-    def __init__(self, in_features, activation=nn.ReLU(), **kwargs):
-        super().__init__()
-
-        self.conv2 = nn.Linear(in_features, 512)
-        self.act1 = activation
-        self.conv3 = nn.Linear(512, 256)
-        self.act2 = activation
-        self.conv4 = nn.Linear(256, 128)
-        self.act3 = activation
-        self.conv6 = nn.Linear(128, 3)
-        self.act4 = activation
+    def _output_shape(self):
+        modules = list(self.children())
+        return modules[-1].output_shape
 
 
-class PointCloudGraphXDecoder(nn.Sequential):
-    def __init__(self, in_features, in_instances, activation=nn.ReLU()):
-        super().__init__()
+class PointCloudEncoder(nnt.Module, _PCEncoderMethods):
+    def __init__(self, pc_shape, out_features, activation='relu', adain=True, projection=True):
+        super().__init__(pc_shape)
+        self.adain = adain
+        self.projection = projection
 
-        self.conv2 = GraphXConv(in_features, 512, in_instances=in_instances, activation=activation)
-        self.conv3 = GraphXConv(512, 256, in_instances=in_instances, activation=activation)
-        self.conv4 = GraphXConv(256, 128, in_instances=in_instances, activation=activation)
-        self.conv6 = nn.Linear(128, 3)
+        if self.adain:
+            self.blocks = nnt.Sequential(input_shape=pc_shape)
+            for i, out_features_ in enumerate(out_features):
+                block = nnt.Sequential(input_shape=self.blocks.output_shape)
+                block.add_module('fc1', nnt.FC(block.output_shape, out_features_, activation=activation))
+                block.add_module('fc2', nnt.FC(block.output_shape, out_features_, activation=activation))
+                self.blocks.add_module('block%d' % i, block)
+
+            fcs = [nnt.FC(block.output_shape, out_features_) for block, out_features_ in zip(self.blocks, out_features)]
+            self.fcs = nnt.Sequential(*fcs, input_shape=None)
+
+        mul = self.adain + self.projection
+        self.concat = nnt.Lambda(lambda x: T.cat(x, -1),
+                                 input_shape=[pc_shape[:-1] + (dim,) for dim in out_features] * mul + [list(pc_shape)],
+                                 output_shape=pc_shape[:-1] + (mul * sum(out_features) + pc_shape[2],))
+
+    def forward(self, img_feats, init_pc):
+        return super()._forward(img_feats, init_pc)
+
+    @property
+    @utils.validate
+    def output_shape(self):
+        return super()._output_shape()
 
 
-class Pixel2Pointcloud(nn.Module):
-    def __init__(self, in_channels, in_instances, activation=nn.ReLU(), optimizer=None, scheduler=None, use_graphx=True, **kwargs):
-        super().__init__()
+class CNN18Encoder(nnt.Module, _ImageEncoderMethods):
+    def __init__(self, input_shape, activation='relu'):
+        super().__init__(input_shape)
 
-        self.img_enc = CNN18Encoder(in_channels, activation)
+        self.block1 = nnt.Sequential(input_shape=input_shape)
+        self.block1.add_module('conv1', Conv(self.block1.output_shape, 16, 3, activation=activation))
+        self.block1.add_module('conv2', Conv(self.block1.output_shape, 16, 3, activation=activation))
+        self.block1.add_module('conv3', Conv(self.block1.output_shape, 32, 3, stride=2, activation=activation))
+        self.block1.add_module('conv4', Conv(self.block1.output_shape, 32, 3, activation=activation))
+        self.block1.add_module('conv5', Conv(self.block1.output_shape, 32, 3, activation=activation))
+        self.block1.add_module('conv6', Conv(self.block1.output_shape, 64, 3, stride=2, activation=activation))
+        self.block1.add_module('conv7', Conv(self.block1.output_shape, 64, 3, activation=activation))
+        self.block1.add_module('conv8', Conv(self.block1.output_shape, 64, 3, activation=activation))
 
-        out_features = [block[-2].out_channels for block in self.img_enc.children()]
-        self.pc_enc = PointCloudEncoder(3, out_features, cat_pc=True, use_adain=True, use_proj=True, 
-                                        activation=activation)
-        
-        deform_net = PointCloudGraphXDecoder if use_graphx else PointCloudDecoder
-        self.pc = deform_net(2 * sum(out_features) + 3, in_instances=in_instances, activation=activation)
+        self.block3 = nnt.Sequential(input_shape=self.block1.output_shape)
+        self.block3.add_module('conv2', Conv(self.block3.output_shape, 128, 3, stride=2, activation=activation))
+        self.block3.add_module('conv3', Conv(self.block3.output_shape, 128, 3, activation=activation))
+        self.block3.add_module('conv4', Conv(self.block3.output_shape, 128, 3, activation=activation))
 
-        self.optimizer = None if optimizer is None else optimizer(self.parameters())
-        self.scheduler = None if scheduler or optimizer is None else scheduler(self.optimizer)
+        self.block4 = nnt.Sequential(input_shape=self.block3.output_shape)
+        self.block4.add_module('conv3', Conv(self.block4.output_shape, 256, 5, stride=2, activation=activation))
+        self.block4.add_module('conv4', Conv(self.block4.output_shape, 256, 3, activation=activation))
+        self.block4.add_module('conv5', Conv(self.block4.output_shape, 256, 3, activation=activation))
+
+        self.block5 = nnt.Sequential(input_shape=self.block4.output_shape)
+        self.block5.add_module('conv3', Conv(self.block5.output_shape, 512, 5, stride=2, activation=activation))
+        self.block5.add_module('conv4', Conv(self.block5.output_shape, 512, 3, activation=activation))
+        self.block5.add_module('conv5', Conv(self.block5.output_shape, 512, 3, activation=activation))
+        self.block5.add_module('conv6', Conv(self.block5.output_shape, 512, 3, activation=activation))
+        self.blocks = [self.block1, self.block3, self.block4, self.block5]
+
+    def forward(self, input):
+        return super()._forward(input)
+
+    @property
+    @utils.validate
+    def output_shape(self):
+        return super()._output_shape()
+
+
+class PointCloudDecoder(nnt.Sequential):
+    def __init__(self, input_shape, activation='relu'):
+        super().__init__(input_shape=input_shape)
+
+        self.add_module('conv2', nnt.FC(self.output_shape, 512, activation=activation))
+        self.add_module('conv3', nnt.FC(self.output_shape, 256, activation=activation))
+        self.add_module('conv4', nnt.FC(self.output_shape, 128, activation=activation))
+        self.add_module('conv6', nnt.FC(self.output_shape, 3, activation=None))
+
+
+class PointCloudResDecoder(nnt.Sequential):
+    def __init__(self, input_shape, activation='relu'):
+        super().__init__(input_shape=input_shape)
+
+        self.add_module('conv2', ResFC(self.output_shape, 512, activation=activation))
+        self.add_module('conv3', ResFC(self.output_shape, 256, activation=activation))
+        self.add_module('conv4', ResFC(self.output_shape, 128, activation=activation))
+        self.add_module('conv6', nnt.FC(self.output_shape, 3, activation=None))
+
+
+class PointCloudGraphXDecoder(nnt.Sequential):
+    def __init__(self, input_shape, activation='relu'):
+        super().__init__(input_shape=input_shape)
+
+        self.add_module('conv2', GraphXConv(self.output_shape, 512, activation=activation))
+        self.add_module('conv3', GraphXConv(self.output_shape, 256, activation=activation))
+        self.add_module('conv4', GraphXConv(self.output_shape, 128, activation=activation))
+        self.add_module('conv6', nnt.FC(self.output_shape, 3, activation=None))
+
+
+class PointCloudResGraphXDecoder(nnt.Sequential):
+    def __init__(self, input_shape, activation='relu'):
+        super().__init__(input_shape=input_shape)
+
+        self.add_module('conv2', ResGraphXConv(self.output_shape, 512, activation=activation))
+        self.add_module('conv3', ResGraphXConv(self.output_shape, 256, activation=activation))
+        self.add_module('conv4', ResGraphXConv(self.output_shape, 128, activation=activation))
+        self.add_module('conv6', nnt.FC(self.output_shape, 3, activation=None))
+
+
+class PointCloudResGraphXUpDecoder(nnt.Sequential):
+    def __init__(self, input_shape, activation='relu'):
+        super().__init__(input_shape=input_shape)
+
+        self.add_module('conv2', ResGraphXConv(self.output_shape, 512, num_instances=self.output_shape[1] * 2,
+                                               activation=activation))
+        self.add_module('conv3', ResGraphXConv(self.output_shape, 256, num_instances=self.output_shape[1] * 2,
+                                               activation=activation))
+        self.add_module('conv4', ResGraphXConv(self.output_shape, 128, num_instances=self.output_shape[1] * 2,
+                                               activation=activation))
+        self.add_module('conv6', nnt.FC(self.output_shape, 3, activation=None))
+
+
+class PointCloudResLowRankGraphXUpDecoder(nnt.Sequential):
+    def __init__(self, input_shape, activation='relu', decimation=.5):
+        super().__init__(input_shape=input_shape)
+
+        self.add_module('conv2', ResLowRankGraphXConv(self.output_shape, 512, num_instances=self.output_shape[1] * 2,
+                                                      rank=int(decimation * self.output_shape[1]), activation=activation))
+        self.add_module('conv3', ResLowRankGraphXConv(self.output_shape, 256, num_instances=self.output_shape[1] * 2,
+                                                      rank=int(decimation * self.output_shape[1]), activation=activation))
+        self.add_module('conv4', ResLowRankGraphXConv(self.output_shape, 128, num_instances=self.output_shape[1] * 2,
+                                                      rank=int(decimation * self.output_shape[1]), activation=activation))
+        self.add_module('conv6', nnt.FC(self.output_shape, 3, activation=None))
+
+
+class PointcloudDeformNet(nnt.Net, nnt.Module):
+    def __init__(self, input_shape, pc_shape, img_enc, pc_enc, pc_dec, activation='relu', adain=True, projection=True,
+                 optimizer=None, scheduler=None, **kwargs):
+        super().__init__(input_shape=input_shape)
+
+        self.img_enc = img_enc(input_shape, activation)
+        self.pc_enc = pc_enc(pc_shape, [block.output_shape[1] for block in self.img_enc.blocks], activation,
+                             adain=adain, projection=projection)
+        self.pc = pc_dec(self.pc_enc.output_shape, activation=activation)
+
+        self.optim['optimizer'] = T.optim.Adam(self.trainable, 1e-4, weight_decay=0) if optimizer is None \
+            else optimizer(self.trainable)
+        self.optim['scheduler'] = scheduler(self.optim['optimizer']) if scheduler else None
         self.kwargs = kwargs
-
-        if T.cuda.is_available():
-            self.cuda()
 
     def forward(self, input, init_pc):
         img_feats = self.img_enc(input)
         pc_feats = self.pc_enc(img_feats, init_pc)
         return self.pc(pc_feats)
 
-    def loss(self, input, init_pc, gt_pc, reduce='sum'):
-        pred_pc = self(input, init_pc)
-        loss = sum(
-            [normalized_chamfer_loss(pred[None], gt[None], reduce=reduce) for pred, gt in zip(pred_pc, gt_pc)]) / len(
-            gt_pc) if isinstance(gt_pc, (list, tuple)) else normalized_chamfer_loss(pred_pc, gt_pc, reduce=reduce)
-        loss_dict = OrderedDict([('chamfer', loss), ('total', loss)])
-        return loss_dict, pred_pc
+    @property
+    @utils.validate
+    def output_shape(self):
+        modules = list(self.children())
+        return modules[-1].output_shape
 
-    def learn(self, input, init_pc, gt_pc):
-        self.train(True)
-        self.optimizer.zero_grad()
-        loss_dict, _ = self.loss(input, init_pc, gt_pc, 'mean')
-        loss = loss_dict['total']
-        loss.backward()
-        self.optimizer.step()
-        loss_np = loss.detach().item()
+    def regularization(self):
+        return sum(T.sum(w ** 2) for w in self.regularizable)
+
+    def train_procedure(self, init_pc, input, gt_pc, reduce='mean', normalized=False):
+        pred_pc = self(input, init_pc)
+
+        loss = sum([normalized_chamfer_loss(pred[None], gt[None], reduce=reduce, normalized=normalized) for pred, gt in zip(pred_pc, gt_pc)]) / len(
+            gt_pc) if isinstance(gt_pc, (list, tuple)) else normalized_chamfer_loss(pred_pc, gt_pc, reduce=reduce, normalized=normalized)
+        return loss
+
+    def eval_procedure(self, init_pc, input, gt_pc, reduce='mean', normalized=False):
+        pred_pc = self(input, init_pc)
+
+        loss = sum([normalized_chamfer_loss(pred[None], gt[None], reduce=reduce, normalized=normalized) for pred, gt in zip(pred_pc, gt_pc)]) / len(
+            gt_pc) if isinstance(gt_pc, (list, tuple)) else normalized_chamfer_loss(pred_pc, gt_pc, reduce=reduce, normalized=normalized)
+        self.stats['eval']['scalars']['eval_chamfer'] = nnt.utils.to_numpy(loss)
         del loss
-        return loss_np
+
+    def learn(self, init_pc, input, gt_pc, *args, **kwargs):
+        self.train(True)
+        self.optim['optimizer'].zero_grad()
+        loss = self.train_procedure(init_pc, input, gt_pc, reduce='mean')
+        if not (T.isnan(loss) or T.isinf(loss)):
+            loss.backward()
+            self.optim['optimizer'].step()
+
+        self.stats['train']['scalars']['chamfer'] = nnt.utils.to_numpy(loss)
+        del loss
