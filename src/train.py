@@ -34,11 +34,11 @@ def train_valid(data_root, name, img_enc, pc_enc, pc_dec, optimizer, scheduler, 
         pc_dec = partial(pc_dec, decimation=decimation)
 
     net = PointcloudDeformNet((bs,) + (3 if color_img else 1, 224, 224), (bs, n_points, 3), img_enc, pc_enc, pc_dec,
-                              adain=adain, projection=projection,
-                              optimizer=lambda x: optimizer(x, lr, weight_decay=weight_decay),
-                              scheduler=lambda x: scheduler(x, milestones=milestones, gamma=gamma),
-                              weight_decay=None)
+                              adain=adain, projection=projection, weight_decay=None)
     print(net)
+    solver = T.optim.Adam(net.trainable, 1e-4, weight_decay=0) if optimizer is None \
+        else optimizer(net.trainable, lr, weight_decay=weight_decay)
+    scheduler = scheduler(solver, milestones=milestones, gamma=gamma) if scheduler is not None else None
 
     train_data = ShapeNet(path=data_root, grayscale=not color_img, type='train', n_points=n_points)
     sampler = WeightedRandomSampler(train_data.sample_weights, len(train_data), True)
@@ -49,38 +49,42 @@ def train_valid(data_root, name, img_enc, pc_enc, pc_dec, optimizer, scheduler, 
                         n_points=n_points)
     val_loader = DataLoader(val_data, batch_size=bs, shuffle=False, num_workers=1, collate_fn=collate, drop_last=True)
 
+    mon.model_name = name
+    mon.print_freq = print_freq
+    mon.num_iters = len(train_data) // bs
+    mon.set_path(checkpoint_folder)
     if checkpoint_folder is None:
-        mon = nnt.Monitor(name, print_freq=print_freq, num_iters=len(train_data) // bs, use_tensorboard=True)
-        mon.copy_files(backup_files)
-
+        mon.backup(backup_files)
         mon.dump_rep('network', net)
-        mon.dump_rep('optimizer', net.optim['optimizer'])
-        if net.optim['scheduler']:
-            mon.dump_rep('scheduler', net.optim['scheduler'])
+        mon.dump_rep('optimizer', solver)
+        if scheduler is not None:
+            mon.dump_rep('scheduler', scheduler)
 
-        states = {
-            'model_state_dict': net.state_dict(),
-            'opt_state_dict': net.optim['optimizer'].state_dict()
-        }
-        if net.optim['scheduler']:
-            states['scheduler_state_dict'] = net.optim['scheduler'].state_dict()
+        def save_checkpoint():
+            states = {
+                'states': mon.epoch,
+                'model_state_dict': net.state_dict(),
+                'opt_state_dict': solver.state_dict()
+            }
+            if scheduler is not None:
+                states['scheduler_state_dict'] = scheduler.state_dict()
 
-        mon.schedule(mon.dump, beginning=False, name='training.pt', obj=states, type='torch', keep=5)
+            mon.dump(name='training.pt', obj=states, method='torch', keep=5)
+
+        mon.schedule(save_checkpoint, when=mon._end_epoch_)
         print('Training...')
     else:
-        mon = nnt.Monitor(current_folder=checkpoint_folder, print_freq=print_freq, num_iters=len(train_data) // bs,
-                          use_tensorboard=True)
         states = mon.load('training.pt', type='torch')
-        mon.set_iter(mon.get_epoch() * len(train_data) // bs)
-
+        mon.epoch = states['epoch']
         net.load_state_dict(states['model_state_dict'])
         net.optim['optimizer'].load_state_dict(states['opt_state_dict'])
         if net.optim['scheduler']:
             net.optim['scheduler'].load_state_dict(states['scheduler_state_dict'])
 
-        print('Resume from epoch %d...' % mon.get_epoch())
+        print('Resume from epoch %d...' % mon.epoch)
 
-    mon.run_training(net, train_loader, n_epochs, val_loader, valid_freq=val_freq, reduce='mean')
+    mon.run_training(net, solver, train_loader, n_epochs, scheduler=scheduler, eval_loader=val_loader,
+                     valid_freq=val_freq, reduce='mean')
     print('Training finished!')
 
 

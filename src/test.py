@@ -27,7 +27,8 @@ gin.external_configurable(PointCloudResLowRankGraphXUpDecoder, 'pc_upreslowrankg
 
 @gin.configurable('GraphX')
 def test_each_category(data_root, checkpoint_folder, img_enc, pc_enc, pc_dec, color_img=False, n_points=250, **kwargs):
-    mon = nnt.Monitor(current_folder=checkpoint_folder, print_freq=1)
+    mon.print_freq = 1
+    mon.current_folder = checkpoint_folder
     states = mon.load('training.pt', type='torch')
     net = PointcloudDeformNet((bs,) + (3 if color_img else 1, 224, 224), (bs, n_points, 3), img_enc, pc_enc, pc_dec)
     print(net)

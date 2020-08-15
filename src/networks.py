@@ -1,6 +1,6 @@
 from functools import partial
 from neuralnet_pytorch import utils
-import numpy as np
+from neuralnet_pytorch import monitor as mon
 import torch as T
 
 from ops import *
@@ -269,19 +269,15 @@ class PointCloudResLowRankGraphXUpDecoder(nnt.Sequential):
         self.add_module('conv6', nnt.FC(self.output_shape, 3, activation=None))
 
 
-class PointcloudDeformNet(nnt.Net, nnt.Module):
+class PointcloudDeformNet(nnt.Module):
     def __init__(self, input_shape, pc_shape, img_enc, pc_enc, pc_dec, activation='relu', adain=True, projection=True,
-                 optimizer=None, scheduler=None, **kwargs):
+                 **kwargs):
         super().__init__(input_shape=input_shape)
 
         self.img_enc = img_enc(input_shape, activation)
         self.pc_enc = pc_enc(pc_shape, [block.output_shape[1] for block in self.img_enc.blocks], activation,
                              adain=adain, projection=projection)
         self.pc = pc_dec(self.pc_enc.output_shape, activation=activation)
-
-        self.optim['optimizer'] = T.optim.Adam(self.trainable, 1e-4, weight_decay=0) if optimizer is None \
-            else optimizer(self.trainable)
-        self.optim['scheduler'] = scheduler(self.optim['optimizer']) if scheduler else None
         self.kwargs = kwargs
 
     def forward(self, input, init_pc):
@@ -298,28 +294,20 @@ class PointcloudDeformNet(nnt.Net, nnt.Module):
     def regularization(self):
         return sum(T.sum(w ** 2) for w in self.regularizable)
 
-    def train_procedure(self, init_pc, input, gt_pc, reduce='mean', normalized=False):
+    def get_loss(self, batch, reduce='mean', normalized=False):
+        init_pc, input, gt_pc = batch
         pred_pc = self(input, init_pc)
 
         loss = sum([normalized_chamfer_loss(pred[None], gt[None], reduce=reduce, normalized=normalized) for pred, gt in zip(pred_pc, gt_pc)]) / len(
             gt_pc) if isinstance(gt_pc, (list, tuple)) else normalized_chamfer_loss(pred_pc, gt_pc, reduce=reduce, normalized=normalized)
         return loss
 
-    def eval_procedure(self, init_pc, input, gt_pc, reduce='mean', normalized=False):
-        pred_pc = self(input, init_pc)
+    def train_procedure(self, batch, reduce='mean', normalized=False):
+        loss = self.get_loss(batch, reduce, normalized)
+        mon.plot('train chamfer', loss, smooth=.99)
+        return loss
 
-        loss = sum([normalized_chamfer_loss(pred[None], gt[None], reduce=reduce, normalized=normalized) for pred, gt in zip(pred_pc, gt_pc)]) / len(
-            gt_pc) if isinstance(gt_pc, (list, tuple)) else normalized_chamfer_loss(pred_pc, gt_pc, reduce=reduce, normalized=normalized)
-        self.stats['eval']['scalars']['eval_chamfer'] = nnt.utils.to_numpy(loss)
-        del loss
-
-    def learn(self, init_pc, input, gt_pc, *args, **kwargs):
-        self.train(True)
-        self.optim['optimizer'].zero_grad()
-        loss = self.train_procedure(init_pc, input, gt_pc, reduce='mean')
-        if not (T.isnan(loss) or T.isinf(loss)):
-            loss.backward()
-            self.optim['optimizer'].step()
-
-        self.stats['train']['scalars']['chamfer'] = nnt.utils.to_numpy(loss)
+    def eval_procedure(self, batch, reduce='mean', normalized=False):
+        loss = self.get_loss(batch, reduce, normalized)
+        mon.plot('eval chamfer', loss, smooth=.95)
         del loss
