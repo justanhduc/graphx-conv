@@ -40,6 +40,8 @@ cd data
 python split.py path/to/the/downloaded/data/folder
 ```
 
+A pre-processed zip file can be found [here](https://drive.google.com/file/d/1EzGkZ4XBhVNGZPnMXPSbkOaNz2sechbZ/view)
+
 ## Training and testing
 
 ### Training
@@ -93,7 +95,7 @@ The script calculates the Chamfer distance (CD) scores similar to
 
 ### Numerical results
 
-|Methods|IoU|Chamfer|
+|Methods|Chamfer|IoU|
 |:-------:|:---:|:-------:|
 |[3D-R2N2](http://3d-r2n2.stanford.edu/)|1.445|0.631|
 |[PSG](https://arxiv.org/abs/1612.00603)|0.593|0.640|
