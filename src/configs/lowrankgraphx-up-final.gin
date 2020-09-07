@@ -6,6 +6,6 @@ GraphX.pc_enc = @pc_enc
 GraphX.pc_dec = @pc_upreslowrankgraphxdec
 GraphX.adain = True
 GraphX.projection = True
-decimation = .5
+GraphX.decimation = .5
 GraphX.n_points = 250
 GraphX.checkpoint_folder = None

@@ -16,8 +16,6 @@ from networks import *
 from data_loader import ShapeNet, collate
 
 config_file = args.config_file
-backup_files = ['train.py', 'networks.py', 'data_loader.py', 'ops.py'] + [config_file]
-
 gin.external_configurable(CNN18Encoder, 'cnn18_enc')
 gin.external_configurable(PointCloudEncoder, 'pc_enc')
 gin.external_configurable(PointCloudDecoder, 'pc_dec')
@@ -54,7 +52,8 @@ def train_valid(data_root, name, img_enc, pc_enc, pc_dec, optimizer, scheduler, 
     mon.num_iters = len(train_data) // bs
     mon.set_path(checkpoint_folder)
     if checkpoint_folder is None:
-        mon.backup(backup_files)
+        backups = os.listdir('.')
+        mon.backup(backups, ignore=('results', '*.pyc', '__pycache__', '.idea'))
         mon.dump_rep('network', net)
         mon.dump_rep('optimizer', solver)
         if scheduler is not None:

@@ -5,16 +5,17 @@ The official implementation of the ICCV 2019 paper
 
 ![framework](./imgs/framework.jpg)
 
-__Updates:__ We have achieved a better performance with `PointCloudResLowRankGraphXUpDecoder`, 
+__Update 1:__ We have achieved a better performance with `PointCloudResLowRankGraphXUpDecoder`, 
 which is an upgraded version of the best deformation network in the paper. The new network works 
 comparably with the best network in the paper but consumes much less memory.
+
+__Update 2 (Sep 7, 2020):__ Refactor the code to work with the latest [Neuralnet-pytorch](https://github.com/justanhduc/neuralnet-pytorch).
 
 ## Prerequisite
 
 [Pytorch](https://pytorch.org/get-started/locally/) (>=1.0.0)
 
-[Neuralnet-pytorch](https://github.com/justanhduc/neuralnet-pytorch) 
-(branch [fancy](https://github.com/justanhduc/neuralnet-pytorch/tree/fancy))
+[Neuralnet-pytorch](https://github.com/justanhduc/neuralnet-pytorch) (``pip install "neuralnet-pytorch[gin] @ git+git://github.com/justanhduc/neuralnet-pytorch.git@6bda19fdc57f176cb82f58d287602f4ccf4cfc23" --global-option="--cuda-ext"``)
 
 [Gin-config](https://github.com/google/gin-config)
 
